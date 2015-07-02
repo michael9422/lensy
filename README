@@ -1,0 +1,32 @@
+
+The program "lensy.c" is a experimental library for modeling geometric 
+light ray paths with lenses and mirrors that have simple surfaces.
+
+See the comments in the program source code for instructions
+on compiling, running, or modifying the program. Or, do (as root):
+
+ # gunzip lensy-1.0.tar.gz
+ # tar -xvf lensy-1.0.tar
+ # cd lensy-1.0
+ # ./configure
+ # make
+ # make install
+
+Note that compiling the program requires the SDL library and development files
+to be installed.
+
+Run the example program with:
+
+ # ./telescope
+
+After a few seconds, the program draws the light paths in a SDL graphics
+window, and generates a FITS file of the calculated focal plane picture.
+
+The parameters for the light source(s) and optical elements are included
+in the source code. The program is designed to model the TSU echelle 
+spectrograph at Fairborn observatory. It is not easily re-purposed, at this 
+point.
+
+
+
+Last update: 2015-06-11

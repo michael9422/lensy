@@ -1,0 +1,1194 @@
+<html>
+<head><title>lensy.js</title></head>
+<body>
+<canvas id="canvas_id" width="640" height="480">
+This text is displayed if your browser does not support HTML5 Canvas.
+</canvas>
+
+<script type="text/javascript">
+
+/* This is a partially copied javascript version of the C-language program.
+ * Open this file with a browser to see the output. 
+ *
+ * lensy.js (v0.6b) - An experimental program for modelling geometric light ray
+ *                    paths with lenses and mirrors that have simple surfaces. 
+ * 
+ *-----------------------------------------------------------------------
+ * Copyright (C) 2011 Free Software Foundation, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *-----------------------------------------------------------------------
+ *
+ * This program is written for focusing tests of a specific camera lens.
+ * For another optical system, the program must be modified and recompiled.
+ * 
+ * The program works by first specifying what surfaces the light rays will
+ * pass through. They can be flat, spherical, parabolic, or cylindrical. 
+ * For each surface, a structure of that type is declared and the surface 
+ * parameters are specified (i.e. the vertex position vector, the aperture 
+ * diameter, and the vector from the vertex to the center of curvature, or to
+ * the focus for a parabola).
+ *
+ * Then, a light ray structure is initialized, and it is traced through the optics
+ * by determining where it intersects the surfaces, in order, and adjusting the
+ * the ray trajectory at each surface. This is done by calling one of the functions:
+ *
+ *    ray_intersect_paraboloid()
+ *    ray_intersect_sphere()
+ *    ray_intersect_cylinder()
+ *    ray_intersect_plane()
+ *
+ * followed by calling one of the functions: 
+ *
+ *    reflect_ray()
+ *    refract_ray()
+ *    diffract_ray()
+ *    impact_ray()
+ *
+ * The calculations are done for three dimensional rays and surfaces. The sequence
+ * that rays intersect surfaces is determined by the sequence that the functions are
+ * called in the program code, and the program does not attempt to determine if
+ * interference would prevent that sequence of intersections.
+ *
+ * More details for the ray tracing are given in comments throughout the program.
+ *
+ * Send questions or changes to me at <michael.h.williamson@gmail.com>.
+ *-----------------------------------------------------------------
+ *
+ */
+
+
+//---------------------------------- initialize the window
+var canvas_v = document.getElementById ('canvas_id');
+var context = canvas_v.getContext ('2d');
+context.translate (320, 240);
+context.scale (1.0, 1.0);
+
+
+//--------------------------------- define some global variables
+var PI		= 3.14159265;
+var DEG2RAD	= 0.01745329252;
+var RAD2DEG	= 57.29577951;
+
+var dpixel	= 0.0004;       // meters/pixel value for drawing to the window
+var in_air	= 1.000293;     // index of refraction for air
+var in_vacuum	= 1.000;        // index of refraction for vacuum
+
+
+
+/*------------------------------------ define the surface structures
+ * Arrays have elements of <[0], [1], [2]> = <x, y, z> = <horizontal axis, 
+ * vertical axis, depth axis>. All units are in meters.
+ */
+function paraboloid_struct () {
+   var v = new Array(3);	// The 3-D vector position of the paraboloid vertex.
+   var f = new Array(3);	// The vector from the vertex to the focus, defining the -
+				// focal length and the orientation of the paraboloid.
+   var aperture;		// The circular aperture diameter of this element.
+}
+
+
+function sphere_struct () {
+   var v = new Array(3);	// The 3-D vector position of the vertex (aperture center).
+   var vr = new Array(3);	// The 3-D vector from the vertex to the center of the sphere.
+   var aperture;		// The circular aperture diameter of this element.
+}
+
+
+function plane_struct () {
+   var v = new Array(3);	// The 3-D vector position of the vertex (aperture/focus center).
+   var n = new Array(3);	// The 3-D vector normal to the plane.
+   var aperture;		// The circular aperture diameter of this element - the
+				// physical size, not a projection.
+				// Possibly a orientation vector is worth adding.
+}
+
+
+function cylinder_struct () {
+   var v = new Array(3);	// The 3-D vector position of the vertex (aperture center).
+   var va = new Array(3);	// The 3-D vector from the vertex to the cylinder axis. The -
+				// length is the radius of the cylinder.
+   var a = new Array(3);	// A 3-D vector parallel to the cylinder axis. This vector -
+				// will be adjusted to be perpendicular to 'va' if it is not.
+   var aperture;		// The circular aperture diameter of this element.
+}
+
+
+//---------------------------- define a point source structure and list
+function ptsource_struct () {
+   var p = new Array(3);	// The <x, y, z> position vector, in meters.
+   var d = new Array(3);	// The direction vector.
+   var cone_dia;		// The diameter of a cone of rays, in degrees.
+   var cone_step;		// The angular spacing of rays in the cone.
+   var wavelength;		// The wavelength.
+   var red, green, blue;	// Colors for graphics.
+   var draw;			// boolean flag: 1=draw, 0=do not draw
+}
+
+
+var pts0 = new ptsource_struct();
+
+var pts = new Array();
+var n_pts = 0;
+
+pts0.p 		= [ -75.0e-3, +0.000, 0.000 ];
+pts0.d 		= [ -1.0,  0.0, 0.0 ];
+pts0.cone_dia 	= 90.0;
+pts0.cone_step 	= 3.0;
+pts0.wavelength = 502e-9;
+pts0.red 	= 0;
+pts0.green 	= 0;
+pts0.blue 	= 255;
+pts0.draw	= 1;
+
+pts[n_pts++] = pts0;
+
+//--------------------------- an cone of rays array
+var coner = new Array();
+var n_coner = 0;
+
+
+//-------------------------------- define the light ray structure
+function ray_struct () {
+   var p = new Array(3);	// The 3-D vector position of the light ray.
+   var d = new Array(3);	// The ray direction vector.
+   var pathkey;		// The ray path history, used for spot size calculation.
+}
+
+
+//--------------------------------------------------- inner3
+function inner3 (a, b) {
+   return (a[0]*b[0] + a[1]*b[1] + a[2]*b[2]);
+}
+
+
+//--------------------------------------------------- mag3
+function mag3 (a) {
+   return (Math.sqrt (inner3 (a, a)));
+}
+
+
+//--------------------------------------------------- cross3
+function cross3 (a, b, r) {
+   r[0] =   a[1]*b[2] - b[1]*a[2];
+   r[1] = -(a[0]*b[2] - b[0]*a[2]);
+   r[2] =   a[0]*b[1] - b[0]*a[1];
+}
+
+
+
+/*---------------------------------------------------- line
+ * Plot a line on the graphics window.
+ *
+ *   p0, p1             - the line segment endpoints
+ *   red, green, blue   - the 8-bit color intensities
+ *
+ * TO DO: For line segments that begin and/or end outside of the window,
+ *        plot only the section crossing the graphic window.
+ */
+function linef (p0, p1, red, green, blue) {
+
+   context.beginPath ();
+   context.moveTo (p0[0]/dpixel, p0[1]/dpixel);
+   context.lineTo (p1[0]/dpixel, p1[1]/dpixel);
+   context.stroke ();
+}
+
+
+
+/*------------------------- calculate where a ray intersects a paraboloid
+ * The ray structure 'r' and the paraboloid structure 'p' passed to this function 
+ * must be initialized with values such that the ray will intersect the paraboloid,
+ * starting from the start position 'p', by multiplying it (the ray) by a positive 
+ * value.
+ *
+ * The return vector q[3] is the calculated intersect point.
+ * The return vector n[3] is the unit normal vector to the surface at the 
+ * intersect point.
+ *
+ * A return value of zero means OK. 
+ * A return value of -1 means that the ray is outside the aperture.
+ * A return value of -2 means that there is no intersect point.
+ *
+ */
+function ray_intersect_paraboloid (r, p, q, n) {
+   var d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10;
+   var w0 = new Array(3);
+   var w1 = new Array(3);
+   var w2 = new Array(3);
+
+
+   q[0] = r.p[0];
+   q[1] = r.p[1];
+   q[2] = r.p[2];
+
+   //--------- w0 (unit vector parallel to p.f)
+   d0 = mag3 (p.f);
+   w0[0] = p.f[0]/d0;
+   w0[1] = p.f[1]/d0;
+   w0[2] = p.f[2]/d0;
+
+   //--------- w1 
+   w1[0] = r.p[0] - p.v[0] - p.f[0];
+   w1[1] = r.p[1] - p.v[1] - p.f[1];
+   w1[2] = r.p[2] - p.v[2] - p.f[2];
+
+   //------ solve a*x^2 + b*x + c = 0 for x
+   d1 = inner3 (r.d, r.d) - Math.pow (inner3 (r.d, w0), 2.0);	// a
+   d4 = 2*mag3 (p.f) + inner3 (w1, w0);
+   d2 = 2*inner3 (r.d, w1) - 2*inner3 (r.d, w0)*d4;		// b
+   d3 = inner3 (w1, w1) - d4*d4;				// c
+   if (d1 == 0.0) {
+      d5 = -d3/d2;
+// } else if (Math.abs (d1) < 1.0e-6) {	// This is a kludge to avoid a -
+//    return (-2);			// big error in the calculation.
+   } else {
+      d10 = d2*d2 - 4*d1*d3;
+      if (d10 < 0.0) return (-2);
+      d5 = (-d2 + Math.sqrt (d10))/(2*d1);
+      d9 = (-d2 - Math.sqrt (d10))/(2*d1);
+      if ((d5 < 0.0) || ((d9 > 0.0) && (d9 < d5))) d5 = d9;
+      if (d5 < 0.0) return (-2);
+   }
+   q[0] = r.p[0] + d5*r.d[0];
+   q[1] = r.p[1] + d5*r.d[1];
+   q[2] = r.p[2] + d5*r.d[2];
+
+   w2[0] = q[0] - p.v[0];
+   w2[1] = q[1] - p.v[1];
+   w2[2] = q[2] - p.v[2];
+
+   d6 = inner3 (w2, w0);
+   w2[0] += -d6 * w0[0];
+   w2[1] += -d6 * w0[1];
+   w2[2] += -d6 * w0[2];
+
+   d7 = mag3 (w2);
+   if ((d7 == 0.0) || (Math.abs (d7) < 1e-6)) {		// the second test is a kludge  
+      n[0] = w0[0];
+      n[1] = w0[1];
+      n[2] = w0[2];
+   } else {
+      w2[0] /= d7;
+      w2[1] /= d7;
+      w2[2] /= d7;
+
+      n[0] = -d7/(2*d0)*w2[0] + w0[0];
+      n[1] = -d7/(2*d0)*w2[1] + w0[1];
+      n[2] = -d7/(2*d0)*w2[2] + w0[2];
+
+      d8 = mag3 (n);
+      n[0] /= d8;
+      n[1] /= d8;
+      n[2] /= d8;
+   }
+
+   if (d7 > p.aperture/2.0) return (-1);
+   return (0);
+}
+
+
+/*------------------------- calculate where a ray intersects a sphere
+ * The ray structure 'r' and the sphere structure 's' passed to this function 
+ * must be initialized with values such that the ray will intersect the sphere,
+ * starting from the start position 'p', by multiplying it (the ray) by a positive 
+ * value.
+ *
+ * The return vector q[3] is the calculated intersect point.
+ * The return vector n[3] is the unit (outward) normal vector to the surface at the 
+ * intersect point.
+ *
+ * A return value of zero means OK. 
+ * A return value of -1 means that the ray is outside the aperture.
+ * A return value of -2 means that there is no intersect point.
+ *
+ *
+ */
+function ray_intersect_sphere (r, s, q, n) {
+   var d0, d1, d2, d3, d4, d5, d7, d8, d9;
+   var w0 = new Array(3);
+   var w1 = new Array(3);
+   var w2 = new Array(3);
+   var w3 = new Array(3);
+   var w4 = new Array(3);
+   var q1 = new Array(3);
+
+
+   q[0] = r.p[0];
+   q[1] = r.p[1];
+   q[2] = r.p[2];
+
+   //--------- w1 = s.v + s.vr (sphere center vector)
+   w1[0] = s.v[0] + s.vr[0];
+   w1[1] = s.v[1] + s.vr[1];
+   w1[2] = s.v[2] + s.vr[2];
+
+   //--------- w0 = r.p - s.c
+   w0[0] = r.p[0] - w1[0];
+   w0[1] = r.p[1] - w1[1];
+   w0[2] = r.p[2] - w1[2];
+
+   //------ solve a*x^2 + b*x + c = 0 for x
+   d1 = inner3 (r.d, r.d);			// a
+   d2 = 2*inner3 (r.d, w0);			// b
+   d3 = inner3 (w0, w0) - inner3 (s.vr, s.vr);	// c
+
+   if (d1 == 0.0) {
+      d4 = -d3/d2;
+// } else if (Math.abs (d1) < 1.0e-6) {	// This is a kludge to avoid a -
+//    return (-2);			// big error in the calculation.
+   } else {
+     /* 
+      * Select the correct intersect point, from the two possible intersect 
+      * points, by choosing the one on the 'vertex' side of the center of
+      * the sphere.
+      */
+      d5 = d2*d2 - 4*d1*d3;
+      if (d5 < 0.0) return (-2);
+
+      d4 = (-d2 + Math.sqrt (d5))/(2*d1);
+      q1[0] = r.p[0] + d4*r.d[0];
+      q1[1] = r.p[1] + d4*r.d[1];
+      q1[2] = r.p[2] + d4*r.d[2];
+
+      w4[0] = q1[0] - w1[0];
+      w4[1] = q1[1] - w1[1];
+      w4[2] = q1[2] - w1[2];
+
+      if (inner3 (w4, s.vr) >= 0.0) {
+         d4 = (-d2 - Math.sqrt (d5))/(2*d1);
+      }
+   }
+   q1[0] = r.p[0] + d4*r.d[0];
+   q1[1] = r.p[1] + d4*r.d[1];
+   q1[2] = r.p[2] + d4*r.d[2];
+
+   w4[0] = q1[0] - w1[0];
+   w4[1] = q1[1] - w1[1];
+   w4[2] = q1[2] - w1[2];
+
+   if (inner3 (w4, s.vr) >= 0.0) 
+      return (-2);
+
+   q[0] = q1[0];
+   q[1] = q1[1];
+   q[2] = q1[2];
+
+   n[0] = q[0] - w1[0];
+   n[1] = q[1] - w1[1];
+   n[2] = q[2] - w1[2];
+
+   d0 = mag3 (n);
+   if (d0 > 0.0) {
+      n[0] /= d0;
+      n[1] /= d0;
+      n[2] /= d0;
+   }
+   w2[0] = q[0] - s.v[0];
+   w2[1] = q[1] - s.v[1];
+   w2[2] = q[2] - s.v[2];
+
+   d7 = mag3 (s.vr);
+   w3[0] = s.vr[0]/d7;
+   w3[1] = s.vr[1]/d7;
+   w3[2] = s.vr[2]/d7;
+
+   d8 = inner3 (w2, w3);
+   w2[0] += -d8 * w3[0];
+   w2[1] += -d8 * w3[1];
+   w2[2] += -d8 * w3[2];
+
+   d9 = mag3 (w2);
+   if (d9 > s.aperture/2.0) return (-1);
+   return (0);
+}
+
+
+
+/*------------------------- calculate where a ray intersects a plane
+ * The ray structure 'r' and the plane structure 'p' passed to this function 
+ * must be initialized with values such that the ray will intersect the plane,
+ * starting from the start position 'p', by multiplying it (the ray) by a positive 
+ * value.
+ *
+ * The return vector q[3] is the calculated intersect point.
+ * The return vector n[3] is the unit normal vector to the surface.
+ *
+ * A return value of zero means OK. 
+ * A return value of -1 means that the ray is outside the aperture.
+ * A return value of -2 means that there is no intersect point.
+ *
+ */
+function ray_intersect_plane (r, p, q, n) {
+   var d0, d1, d2, d3;
+   var w = new Array(3);
+
+   q[0] = r.p[0];
+   q[1] = r.p[1];
+   q[2] = r.p[2];
+
+   d0 = inner3 (r.d, p.n);
+   if ((d0 == 0.0) || (Math.abs (d0) < 1.0e-6)) return (-2);	// the second test is a kludge
+
+   d1 = (inner3 (p.v, p.n) - inner3 (r.p, p.n))/d0;
+   if (d1 < 0.0) return (-2);
+
+   q[0] = r.p[0] + d1*r.d[0];
+   q[1] = r.p[1] + d1*r.d[1];
+   q[2] = r.p[2] + d1*r.d[2];
+
+   d3 = mag3 (p.n);
+   if (d3 == 0.0) return (-2);
+   n[0] = p.n[0]/d3;
+   n[1] = p.n[1]/d3;
+   n[2] = p.n[2]/d3;
+
+   w[0] = q[0] - p.v[0];
+   w[1] = q[1] - p.v[1];
+   w[2] = q[2] - p.v[2];
+   d2 = mag3 (w);
+
+   if (d2 > p.aperture/2.0) return (-1);
+   return (0);
+}
+
+
+
+
+/*----------------------------------------------- make_ray_cone
+ * Create a cone of rays, in a array, centered around the ray defined 
+ * by the point source element pts[i0]. 
+ * (This could be changed to take a ptsource_struct parameter as
+ *  the parameter instead of the index i0. And also it should be 
+ *  changed to return the number of rays in the cone array.)
+ */
+
+function make_ray_cone (i0) {
+   var i, j, k, n, m;
+   var d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10;
+   var w0 = new Array(3);
+   var w1 = new Array(3);
+   var w2 = new Array(3);
+   var w3 = new Array(3);
+   var u0 = new Array(3);
+   var u1 = new Array(3);
+   var u2 = new Array(3);
+
+
+   d10 = mag3 (pts[i0].d);
+   if (d10 == 0.0) return (-1);
+
+   //--- Add the center ray to the list first
+   var ray = new ray_struct ();
+
+   ray.p = [ 0.0, 0.0, 0.0 ];
+   ray.d = [ 0.0, 0.0, 0.0 ];
+
+   ray.p[0] = pts[i0].p[0];
+   ray.p[1] = pts[i0].p[1];
+   ray.p[2] = pts[i0].p[2];
+   ray.d[0] = pts[i0].d[0];
+   ray.d[1] = pts[i0].d[1];
+   ray.d[2] = pts[i0].d[2];
+   ray.pathkey = "" + i0 + pts[i0].wavelength;
+   coner[n_coner++] = ray;
+
+   //------------- Now add rays inside a cone to the raylist
+   d0 = DEG2RAD * pts[i0].cone_step;
+   if (d0 <= 0.0) 
+      n = 0;
+   else 
+      n = Math.floor ((DEG2RAD * pts[i0].cone_dia/2)/d0);
+   for (j = 1; j <= n; j++) {
+      d1 = j * d0;
+      m = Math.floor (Math.sin (d1)*2*PI/d0);
+      for (k = 0; k < m; k++) {
+         d2 = k * (2*PI/m);
+         d3 = PI/2 - d1;
+
+         //------ w0, w1, w2 are in 'unprimed' coordinates
+         w0[0] = 0.0;
+         w0[1] = 0.0;
+         w0[2] = 1.0;
+
+         w1[0] = Math.cos (d3)*Math.cos (d2);
+         w1[1] = Math.cos (d3)*Math.sin (d2);
+         w1[2] = Math.sin (d3);
+
+         w2[0] = w1[0] - w0[0];
+         w2[1] = w1[1] - w0[1];
+         w2[2] = w1[2] - w0[2];
+
+         d4 = Math.atan2 (pts[i0].d[1], pts[i0].d[0]);
+         d5 = Math.asin (pts[i0].d[2]);
+
+         //------- unit vectors in the 'primed' coordinates
+         u0[0] = Math.cos (PI/2 - d4);
+         u0[1] = Math.cos (d4) * Math.cos (PI/2 - d5);
+         u0[2] = Math.cos (d4) * Math.sin (PI/2 - d5);
+
+         u1[0] = Math.sin (-(PI/2 - d4));
+         u1[1] = Math.cos (-(PI/2 - d4))*Math.cos (PI/2 - d5);
+         u1[2] = Math.cos (-(PI/2 - d4))*Math.sin (PI/2 - d5);
+
+         u2[0] = 0.0;
+         u2[1] = Math.sin (-(PI/2 - d5));
+         u2[2] = Math.cos (-(PI/2 - d5));
+
+         w3[0] = pts[i0].d[0] + d10 * inner3 (w2, u0);
+         w3[1] = pts[i0].d[1] + d10 * inner3 (w2, u1);
+         w3[2] = pts[i0].d[2] + d10 * inner3 (w2, u2);
+
+         //--- Add the ray to the list
+         var ray = new ray_struct ();
+         ray.p = [ 0.0, 0.0, 0.0 ];
+         ray.d = [ 0.0, 0.0, 0.0 ];
+
+         ray.p[0] = pts[i0].p[0];
+         ray.p[1] = pts[i0].p[1];
+         ray.p[2] = pts[i0].p[2];
+         ray.d[0] = w3[0];
+         ray.d[1] = w3[1];
+         ray.d[2] = w3[2];
+         ray.pathkey = "" + i0 + pts[i0].wavelength;
+         coner[n_coner++] = ray;
+      }
+   }
+}
+
+
+
+/*----------------------------------------------------- reflect_ray
+ * 'r' is the ray to be reflected.
+ * 'q' is the 3-D intersect point.
+ * 'n' is the unit normal vector to the surface.
+ */
+function reflect_ray (r, q, n) {
+   var d0;
+
+   r.p[0]      =  q[0];
+   r.p[1]      =  q[1];
+   r.p[2]      =  q[2];
+
+   d0 = inner3 (r.d, n);
+   r.d[0]      += -2*d0*n[0];
+   r.d[1]      += -2*d0*n[1];
+   r.d[2]      += -2*d0*n[2];
+}
+
+
+
+/*----------------------------------------------------- refract_ray
+ * 'r'  is the ray to be refracted.
+ * 'q'  is the 3-D intersect point.
+ * 'n'  is the unit (outward) normal vector to the surface.
+ * 'm'  is the ratio of the index of refraction for the incident medium divided 
+ *      by the index of refraction for the transmission medium.
+ *
+ * A return value of zero means OK.
+ * A return value of -1 means 'total internal reflection'.
+ */
+function refract_ray (r, q, n, m) {
+   var d0, d1, d2, d3;
+   var n1 = new Array(3);
+   var u  = new Array(3);
+   var w  = new Array(3);
+   var w1 = new Array(3);
+   var v  = new Array(3);
+
+
+   r.p[0]      =  q[0];
+   r.p[1]      =  q[1];
+   r.p[2]      =  q[2];
+
+   d0 = mag3 (r.d);
+   if (d0 == 0.0) return (-2);
+
+   u[0] = -r.d[0]/d0;
+   u[1] = -r.d[1]/d0;
+   u[2] = -r.d[2]/d0;
+
+   n1[0] = n[0];
+   n1[1] = n[1];
+   n1[2] = n[2];
+   if (Math.abs (inner3 (n1, n1) - 1.0) > 1.0e-6) return (-2);
+
+   if (inner3 (u, n1) < 0.0) {
+      n1[0] = -n1[0];
+      n1[1] = -n1[1];
+      n1[2] = -n1[2];
+   }
+   cross3 (u, n1, w);
+   d1 = mag3 (w);
+   d2 = m*d1;
+   if (Math.abs (d2) >= 1.0) return (-1);
+   d3 = Math.asin (d2);      // The angle of transmission with respect to the surface normal.
+
+   if (d1 > 0.0) {
+      w1[0] = w[0]/d1;
+      w1[1] = w[1]/d1;
+      w1[2] = w[2]/d1;
+
+      cross3 (w1, n1, v);
+      r.d[0] = d0*(Math.cos (d3)*(-n1[0]) + Math.sin (d3)*v[0]);
+      r.d[1] = d0*(Math.cos (d3)*(-n1[1]) + Math.sin (d3)*v[1]);
+      r.d[2] = d0*(Math.cos (d3)*(-n1[2]) + Math.sin (d3)*v[2]);
+   } else {
+      r.d[0] = d0*(-n1[0]);
+      r.d[1] = d0*(-n1[1]);
+      r.d[2] = d0*(-n1[2]);
+   }
+   return (0);
+}
+
+
+/*----------------------------------------------------- impact_ray
+ * The ray reaches the intersect point (focal plane).
+ *
+ * 'r' is the ray to be impacted.
+ * 'q' is the 3-D intersect point.
+ * 'n' is the unit normal vector to the surface.
+ */
+function impact_ray (r, q, n) {
+   r.p[0]      =  q[0];
+   r.p[1]      =  q[1];
+   r.p[2]      =  q[2];
+}
+
+
+
+
+
+/*------------------------ define some more global variables
+ * These example values are completely arbritary.
+ */
+var par0 = new paraboloid_struct ();
+par0.v = [ -125e-3, 0.0, 0.0 ];
+par0.f = [ +50e-3, 0.0, 0.0 ];
+par0.aperture = 50e-3;
+
+var sph0 = new sphere_struct ();
+sph0.v = [ 0.0, 0.0, 0.0 ];
+sph0.vr = [ +100.0e-3, 0.0, 0.0 ];
+sph0.aperture = 35.0e-3;
+
+var sph1 = new sphere_struct ();
+sph1.v = [ 10.0e-3, 0.0, 0.0 ];
+sph1.vr = [ -80.0e-3, 0.0, 0.0 ];
+sph1.aperture = 35.0e-3;
+
+var sph2 = new sphere_struct ();
+sph2.v = [ 15.0e-3, 0.0, 0.0 ];
+sph2.vr = [ -140.0e-3, 0.0, 0.0 ];
+sph2.aperture = 35.0e-3;
+
+var ccd0 = new plane_struct ();
+ccd0.v = [ +85.0e-3, 0.0, 0.0 ];
+ccd0.n = [ -1.0, 0.0, 0.0 ];
+ccd0.aperture = 15.0e-3;
+
+var ray0 = new ray_struct ();
+ray0.p = [ 0.0, 0.0, 0.0 ];
+ray0.d = [ 0.0, 0.0, 0.0 ];
+ray0.pathkey = "";
+
+
+
+
+
+//-------------------- values for refractive index for Sellmeier formula
+function sellmeier_struct () {
+   var b1, b2, b3, c1, c2, c3;
+}
+
+
+
+var N_BAF10 = new sellmeier_struct ();	//------- N_BAF10(500nm) = 1.68
+var N_SF6 = new sellmeier_struct ();	//------- N_SF6(500nm) = 1.82
+var N_BK7 = new sellmeier_struct ();	//------- N_BK7(500nm) = 1.52
+var SF2 = new sellmeier_struct ();	//------- SF2(500nm) = 1.66
+
+N_BAF10.b1 = 1.58514950e+00;
+N_BAF10.b2 = 1.43559385e-01;
+N_BAF10.b3 = 1.08521269e+00;
+N_BAF10.c1 = 9.26681282e-03; 
+N_BAF10.c2 = 4.24489805e-02; 
+N_BAF10.c3 = 1.05613573e+02;
+
+N_SF6.b1 = 1.77931763e+00;
+N_SF6.b2 = 3.38149866e-01; 
+N_SF6.b3 = 2.08734474e+00;
+N_SF6.c1 = 1.33714182e-02;
+N_SF6.c2 = 6.17533621e-02; 
+N_SF6.c3 = 1.74017590e+02;
+
+N_BK7.b1 = 1.03961212E+00;
+N_BK7.b2 = 2.31792344E-01;
+N_BK7.b3 = 1.01046945E+00;
+N_BK7.c1 = 6.00069867E-03;
+N_BK7.c2 = 2.00179144E-02;
+N_BK7.c3 = 1.03560653E+02;
+
+SF2.b1 = 1.40301821E+00;
+SF2.b2 = 2.31767504E-01;
+SF2.b3 = 9.39056586E-01;
+SF2.c1 = 1.05795466E-02;
+SF2.c2 = 4.93226978E-02;
+SF2.c3 = 1.12405955E+02;
+
+
+
+/*------------------------------------------------------ index_sellmeier
+ * Return the index of refraction using the Sellmeier formula.
+ * Wavelength wl is in meters.
+ */
+function index_sellmeier (wl, a) {
+   var d0, d1;
+
+   wl *= 1.0e6;
+   d0 = wl*wl;
+   d1 = (a.b1 * d0)/(d0 - a.c1) + (a.b2 * d0)/(d0 - a.c2) + (a.b3 * d0)/(d0 - a.c3);   
+   return (Math.sqrt (d1 + 1.0));
+}
+
+
+
+
+//------------------------------------------------- lensy_draw
+function lensy_draw () {
+   var i0;
+   var wavelength, red, green, blue, draw;
+   var i, j, k;			// int32_t
+   var x, y, d0, d1, d2, d3;	// double
+   var v0 = new Array(3);	// 3-D vectors (components type double)
+   var v1 = new Array(3);
+   var v2 = new Array(3);
+   var v3 = new Array(3);
+   var w0 = new Array(3);
+   var w1 = new Array(3);
+   var w2 = new Array(3);
+
+
+   //-------------------------------------------- ray trace loop
+   for (i0 = 0; i0 < n_pts; i0++) {
+
+      wavelength	= pts[i0].wavelength; 
+      red	= pts[i0].red;
+      green	= pts[i0].green;
+      blue	= pts[i0].blue;
+      draw	= pts[i0].draw;
+
+      //---- make a cone of rays for each point source
+      n_coner = 0;
+      make_ray_cone (i0);		// stored in 'coner' global variable
+      document.write ("<br \>" + n_coner + "\t rays <br \>");
+
+
+      for (j = 0; j < n_coner; j++) {
+         draw = pts[i0].draw;
+
+         //---------- a special ray selection rule for example drawing 
+         if (Math.abs (coner[j].d[2]) > 0.02*Math.abs (coner[j].d[0] + coner[j].d[1]))
+            draw = 0;
+
+         i = ray_intersect_paraboloid (coner[j], par0, w0, w1);
+         if (draw == 1) linef (coner[j].p, w0, red, green, blue);
+         if (i < 0) { delete (coner[j]); continue; }
+         i = reflect_ray (coner[j], w0, w1);
+         if (i < 0) { delete (coner[j]); continue; }
+
+         i = ray_intersect_sphere (coner[j], sph0, w0, w1);
+         if (draw == 1) linef (coner[j].p, w0, red, green, blue);
+         if (i < 0) { delete (coner[j]); continue; }
+         d0 = in_air/index_sellmeier (wavelength, N_SF6);
+         i = refract_ray (coner[j], w0, w1, d0);
+         if (i < 0) { delete (coner[j]); continue; }
+
+         i = ray_intersect_sphere (coner[j], sph1, w0, w1);
+         if (draw == 1) linef (coner[j].p, w0, red, green, blue);
+         if (i < 0) { delete (coner[j]); continue; }
+         d0 = index_sellmeier (wavelength, N_SF6)/index_sellmeier (wavelength, N_BAF10);
+         i = refract_ray (coner[j], w0, w1, d0);
+         if (i < 0) { delete (coner[j]); continue; }
+
+         i = ray_intersect_sphere (coner[j], sph2, w0, w1);
+         if (draw == 1) linef (coner[j].p, w0, red, green, blue);
+         if (i < 0) { delete (coner[j]); continue; }
+         d0 = index_sellmeier (wavelength, N_BAF10)/in_air;
+         i = refract_ray (coner[j], w0, w1, d0);
+         if (i < 0) { delete (coner[j]); continue; }
+
+         i = ray_intersect_plane (coner[j], ccd0, w0, w1);
+         if (draw == 1) linef (coner[j].p, w0, red, green, blue);
+         if (i < 0) { delete (coner[j]); continue; }
+         impact_ray (coner[j], w0, w1);
+      }
+   }
+
+
+   /*
+    * The following sections of code trace out cross sections of surface 
+    * elements. They could probably be combined into a single function.
+    */
+
+
+   /*--------------------------- draw a cross-section of the surface 'par0'
+    * Omitting the z-axis component gives the 2-D projection.
+    */
+
+   v0[0] = -par0.f[0];
+   v0[1] = -par0.f[1];
+   v0[2] = -par0.f[2];
+
+   d0 = mag3 (v0);
+   v1[0] = -0.01 * v0[1]/d0;
+   v1[1] =  0.01 * v0[0]/d0;
+   v1[2] =  0.01 *   0.0/d0;
+   cross3 (v0, v1, v2);	// v2 is a vector parallel to the axis used -
+			// for tracing the surface cross-section.
+
+   //------- trace a cross-section in one direction from the vertex
+   ray0.p[0] = par0.v[0] + par0.f[0];
+   ray0.p[1] = par0.v[1] + par0.f[1];
+   ray0.p[2] = par0.v[2] + par0.f[2];
+
+   ray0.d[0] = v0[0];
+   ray0.d[1] = v0[1];
+   ray0.d[2] = v0[2];
+
+   x = par0.v[0]/dpixel;
+   y = par0.v[1]/dpixel;
+
+   context.beginPath ();
+   context.moveTo (x, y);
+
+   for (;;) {
+      cross3 (v2, ray0.d, v1);
+      if (mag3 (v1) == 0.0) break;
+
+      ray0.d[0] += v1[0];
+      ray0.d[1] += v1[1];
+      ray0.d[2] += v1[2];
+
+      j = ray_intersect_paraboloid (ray0, par0, w0, w1);
+      if (j < 0) break;
+
+      x = w0[0]/dpixel;
+      y = w0[1]/dpixel;
+      context.lineTo (x, y);
+   }
+   context.stroke ();
+
+
+   //------- trace a cross-section in the other direction from the vertex
+   ray0.d[0] = v0[0];
+   ray0.d[1] = v0[1];
+   ray0.d[2] = v0[2];
+
+   x = par0.v[0]/dpixel;
+   y = par0.v[1]/dpixel;
+
+   context.beginPath ();
+   context.moveTo (x, y);
+
+   for (;;) {
+      cross3 (ray0.d, v2, v1);
+      if (mag3 (v1) == 0.0) break;
+
+      ray0.d[0] += v1[0];
+      ray0.d[1] += v1[1];
+      ray0.d[2] += v1[2];
+
+      j = ray_intersect_paraboloid (ray0, par0, w0, w1);
+      if (j < 0) break;
+
+      x = w0[0]/dpixel;
+      y = w0[1]/dpixel;
+      context.lineTo (x, y);
+   }
+   context.stroke ();
+
+
+
+   /*--------------------------- draw a cross-section of the surface 'sph0'
+    * Omitting the z-axis component gives the 2-D projection.
+    */
+
+   v0[0] = -sph0.vr[0];
+   v0[1] = -sph0.vr[1];
+   v0[2] = -sph0.vr[2];
+
+   d0 = mag3 (v0);
+   v1[0] = -0.01 * v0[1]/d0;
+   v1[1] =  0.01 * v0[0]/d0;
+   v1[2] =  0.01 *   0.0/d0;
+   cross3 (v0, v1, v2);	// v2 is a vector parallel to the axis used -
+			// for tracing the surface cross-section.
+
+   //------- trace a cross-section in one direction from the vertex
+   ray0.p[0] = sph0.v[0] + sph0.vr[0];
+   ray0.p[1] = sph0.v[1] + sph0.vr[1];
+   ray0.p[2] = sph0.v[2] + sph0.vr[2];
+
+   ray0.d[0] = v0[0];
+   ray0.d[1] = v0[1];
+   ray0.d[2] = v0[2];
+
+   x = sph0.v[0]/dpixel;
+   y = sph0.v[1]/dpixel;
+
+   context.beginPath ();
+   context.moveTo (x, y);
+
+   for (;;) {
+      cross3 (v2, ray0.d, v1);
+      if (mag3 (v1) == 0.0) break;
+
+      ray0.d[0] += v1[0];
+      ray0.d[1] += v1[1];
+      ray0.d[2] += v1[2];
+
+      j = ray_intersect_sphere (ray0, sph0, w0, w1);
+      if (j < 0) break;
+
+      x = w0[0]/dpixel;
+      y = w0[1]/dpixel;
+      context.lineTo (x, y);
+   }
+   context.stroke ();
+
+   //------- trace a cross-section in the other direction from the vertex
+   ray0.d[0] = v0[0];
+   ray0.d[1] = v0[1];
+   ray0.d[2] = v0[2];
+
+   x = sph0.v[0]/dpixel;
+   y = sph0.v[1]/dpixel;
+
+   context.beginPath ();
+   context.moveTo (x, y);
+
+   for (;;) {
+      cross3 (ray0.d, v2, v1);
+      if (mag3 (v1) == 0.0) break;
+
+      ray0.d[0] += v1[0];
+      ray0.d[1] += v1[1];
+      ray0.d[2] += v1[2];
+
+      j = ray_intersect_sphere (ray0, sph0, w0, w1);
+      if (j < 0) break;
+
+      x = w0[0]/dpixel;
+      y = w0[1]/dpixel;
+      context.lineTo (x, y);
+   }
+   context.stroke ();
+
+
+
+   /*--------------------------- draw a cross-section of the surface 'sph1'
+    * Omitting the z-axis component gives the 2-D projection.
+    */
+
+   v0[0] = -sph1.vr[0];
+   v0[1] = -sph1.vr[1];
+   v0[2] = -sph1.vr[2];
+
+   d0 = mag3 (v0);
+   v1[0] = -0.01 * v0[1]/d0;
+   v1[1] =  0.01 * v0[0]/d0;
+   v1[2] =  0.01 *   0.0/d0;
+   cross3 (v0, v1, v2);	// v2 is a vector parallel to the axis used -
+			// for tracing the surface cross-section.
+
+   //------- trace a cross-section in one direction from the vertex
+   ray0.p[0] = sph1.v[0] + sph1.vr[0];
+   ray0.p[1] = sph1.v[1] + sph1.vr[1];
+   ray0.p[2] = sph1.v[2] + sph1.vr[2];
+
+   ray0.d[0] = v0[0];
+   ray0.d[1] = v0[1];
+   ray0.d[2] = v0[2];
+
+   x = sph1.v[0]/dpixel;
+   y = sph1.v[1]/dpixel;
+
+   context.beginPath ();
+   context.moveTo (x, y);
+
+   for (;;) {
+      cross3 (v2, ray0.d, v1);
+      if (mag3 (v1) == 0.0) break;
+
+      ray0.d[0] += v1[0];
+      ray0.d[1] += v1[1];
+      ray0.d[2] += v1[2];
+
+      j = ray_intersect_sphere (ray0, sph1, w0, w1);
+      if (j < 0) break;
+
+      x = w0[0]/dpixel;
+      y = w0[1]/dpixel;
+      context.lineTo (x, y);
+   }
+   context.stroke ();
+
+   //------- trace a cross-section in the other direction from the vertex
+   ray0.d[0] = v0[0];
+   ray0.d[1] = v0[1];
+   ray0.d[2] = v0[2];
+
+   x = sph1.v[0]/dpixel;
+   y = sph1.v[1]/dpixel;
+
+   context.beginPath ();
+   context.moveTo (x, y);
+
+   for (;;) {
+      cross3 (ray0.d, v2, v1);
+      if (mag3 (v1) == 0.0) break;
+
+      ray0.d[0] += v1[0];
+      ray0.d[1] += v1[1];
+      ray0.d[2] += v1[2];
+
+      j = ray_intersect_sphere (ray0, sph1, w0, w1);
+      if (j < 0) break;
+
+      x = w0[0]/dpixel;
+      y = w0[1]/dpixel;
+      context.lineTo (x, y);
+   }
+   context.stroke ();
+
+
+
+   /*--------------------------- draw a cross-section of the surface 'sph2'
+    * Omitting the z-axis component gives the 2-D projection.
+    */
+
+   v0[0] = -sph2.vr[0];
+   v0[1] = -sph2.vr[1];
+   v0[2] = -sph2.vr[2];
+
+   d0 = mag3 (v0);
+   v1[0] = -0.01 * v0[1]/d0;
+   v1[1] =  0.01 * v0[0]/d0;
+   v1[2] =  0.01 *   0.0/d0;
+   cross3 (v0, v1, v2);	// v2 is a vector parallel to the axis used -
+			// for tracing the surface cross-section.
+
+   //------- trace a cross-section in one direction from the vertex
+   ray0.p[0] = sph2.v[0] + sph2.vr[0];
+   ray0.p[1] = sph2.v[1] + sph2.vr[1];
+   ray0.p[2] = sph2.v[2] + sph2.vr[2];
+
+   ray0.d[0] = v0[0];
+   ray0.d[1] = v0[1];
+   ray0.d[2] = v0[2];
+
+   x = sph2.v[0]/dpixel;
+   y = sph2.v[1]/dpixel;
+
+   context.beginPath ();
+   context.moveTo (x, y);
+
+   for (;;) {
+      cross3 (v2, ray0.d, v1);
+      if (mag3 (v1) == 0.0) break;
+
+      ray0.d[0] += v1[0];
+      ray0.d[1] += v1[1];
+      ray0.d[2] += v1[2];
+
+      j = ray_intersect_sphere (ray0, sph2, w0, w1);
+      if (j < 0) break;
+
+      x = w0[0]/dpixel;
+      y = w0[1]/dpixel;
+      context.lineTo (x, y);
+   }
+   context.stroke ();
+
+   //------- trace a cross-section in the other direction from the vertex
+   ray0.d[0] = v0[0];
+   ray0.d[1] = v0[1];
+   ray0.d[2] = v0[2];
+
+   x = sph2.v[0]/dpixel;
+   y = sph2.v[1]/dpixel;
+
+   context.beginPath ();
+   context.moveTo (x, y);
+
+   for (;;) {
+      cross3 (ray0.d, v2, v1);
+      if (mag3 (v1) == 0.0) break;
+
+      ray0.d[0] += v1[0];
+      ray0.d[1] += v1[1];
+      ray0.d[2] += v1[2];
+
+      j = ray_intersect_sphere (ray0, sph2, w0, w1);
+      if (j < 0) break;
+
+      x = w0[0]/dpixel;
+      y = w0[1]/dpixel;
+      context.lineTo (x, y);
+   }
+   context.stroke ();
+
+}
+
+
+//---------------------------------------------------- main
+var d0, i;
+var s, password;
+
+
+//password = prompt ("Enter the password", "");
+
+for (;;) {
+   s = prompt ("Enter a focal length between 0.04 and 0.06", "0.05");
+   d0 = parseFloat (s);
+   if (isNaN (d0)) {
+      document.write ("<br \> invalid value: " + s + "<br \>");
+      break;
+   }   
+   if ((d0 < 0.04) || (d0 > 0.06)) {
+      document.write ("<br \> value outside range <br \>");
+      break;
+   }   
+
+   par0.f[0] = d0;	// change the paraboloid focal length
+   lensy_draw ();
+   break;
+}
+
+
+/*
+for (var key in context) {
+   document.write ("<br \>" + key);
+}
+*/
+
+
+
+</script>
+<noscript>
+<p>Your browser either does not support JavaScript, or you have JavaScript turned off.</p>
+</noscript>
+</body>
+</html>
