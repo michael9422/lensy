@@ -746,6 +746,7 @@ ray_trace_loop:
 	printf ("spotsize x = %5.0lfum, y = %5.0lfum, z = %5.0lfum\n",
 		 2 * w0[0] * 1e6, 2 * w0[1] * 1e6, 2 * w0[2] * 1e6);
 	SDL_Delay(1);
+	SDL_PumpEvents();
 
 	if (i0++ < 25) {
 		secondary.v[0] += 0.015e-3;
@@ -803,7 +804,8 @@ ray_trace_loop:
 		}
 
 		SDL_RenderPresent(optic_ren);
-		SDL_Delay(2);
+		SDL_PumpEvents();
+		SDL_Delay(10);
 	}
 
 	//-------------------------- free the line_list
